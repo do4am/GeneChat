@@ -76,8 +76,33 @@ class LinearWarmupCosineLRScheduler:
         self.warmup_steps = warmup_steps
         self.warmup_start_lr = warmup_start_lr if warmup_start_lr >= 0 else init_lr
 
+    def state_dict(self):
+        return {"last_step": self._last_step if hasattr(self, "_last_step") else 0}
+
+    def load_state_dict(self, state):
+        self._last_step = state.get("last_step", 0)
+        # Immediately set optimizer LR to the correct value for the resumed step
+        total = self._last_step
+        if total < self.warmup_steps:
+            warmup_lr_schedule(
+                step=total % max(self.iters_per_epoch, 1),
+                optimizer=self.optimizer,
+                max_step=self.warmup_steps,
+                init_lr=self.warmup_start_lr,
+                max_lr=self.init_lr,
+            )
+        else:
+            cosine_lr_schedule(
+                epoch=total,
+                optimizer=self.optimizer,
+                max_epoch=self.max_epoch * self.iters_per_epoch,
+                init_lr=self.init_lr,
+                min_lr=self.min_lr,
+            )
+
     def step(self, cur_epoch, cur_step):
         total_cur_step = cur_epoch * self.iters_per_epoch + cur_step
+        self._last_step = total_cur_step
         if total_cur_step < self.warmup_steps:
             warmup_lr_schedule(
                 step=cur_step,

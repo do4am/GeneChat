@@ -107,13 +107,13 @@ class StoppingCriteriaSub(StoppingCriteria):
 
 
 CONV_VISION = Conversation(
-    system="Give the following gene: <gene>geneContent</gene>. "
-           "Please answer my questions.",
-    roles=("Human", "Assistant"),
+    system="A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions.",
+    roles=("USER", "ASSISTANT"),
     messages=[],
     offset=2,
-    sep_style=SeparatorStyle.SINGLE,
-    sep="###",
+    sep_style=SeparatorStyle.TWO,
+    sep=" ",
+    sep2="</s>",
 )
 
 
@@ -132,8 +132,7 @@ class Chat:
         self.device = device
         self.model = model
         # self.model.llama_model = self.model.llama_model.bfloat16()
-        stop_words_ids = [torch.tensor([835]).to(self.device),
-                          torch.tensor([2277, 29937]).to(self.device)]  # '###' can be encoded in two different ways.
+        stop_words_ids = [torch.tensor([2]).to(self.device)]  # EOS token </s>
         self.stopping_criteria = StoppingCriteriaList([StoppingCriteriaSub(stops=stop_words_ids)])
 
     def ask(self, text, conv, function=None):
@@ -167,7 +166,10 @@ class Chat:
 
         embs = embs[:, begin_idx:]
 
-        with self.model.maybe_autocast():   
+        # Ensure KV cache is enabled for inference (gradient checkpointing disables it)
+        self.model.llama_model.config.use_cache = True
+
+        with self.model.maybe_autocast():
             outputs = self.model.llama_model.generate(
                 inputs_embeds=embs,
                 max_new_tokens=max_new_tokens,
@@ -179,6 +181,7 @@ class Chat:
                 repetition_penalty=repetition_penalty,
                 length_penalty=length_penalty,
                 temperature=float(temperature),
+                no_repeat_ngram_size=4,
                 output_hidden_states=False
             )
         with torch.no_grad():
@@ -194,8 +197,8 @@ class Chat:
 
         output_text = self.model.llama_tokenizer.decode(output_token, add_special_tokens=False)
 
-        output_text = output_text.split('###')[0]  # remove the stop sign '###'
-        output_text = output_text.split('Assistant:')[-1].strip()
+        output_text = output_text.split('</s>')[0]  # remove EOS
+        output_text = output_text.split('ASSISTANT:')[-1].strip()
         conv.messages[-1][1] = output_text
 
         # if save_embeds:
@@ -254,15 +257,10 @@ class Chat:
         #gene_embeds = 0
         gene_list.append(gene_embeds)
 
-        conv.append_message(conv.roles[0], f"<gene><geneHere></gene>")
-        '''
-        ########################################################################################################################################## - CHANGE
         if name is not None:
-            conv.append_message(conv.roles[0], f"<gene>{name} - {gene_id}<geneHere></gene>")
+            conv.append_message(conv.roles[0], f"[Gene {name}-{gene_id}]<geneHere>")
         else:
-            conv.append_message(conv.roles[0], f"<gene>{gene_id}<geneHere></gene>")
-        ########################################################################################################################################## - CHANGE
-        '''
+            conv.append_message(conv.roles[0], f"[Gene {gene_id}]<geneHere>")
 
         msg = "Received."
         # self.conv.append_message(self.conv.roles[1], msg)
