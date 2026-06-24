@@ -1,0 +1,66 @@
+model:
+  arch: genechat
+  model_type: pretrain_vicuna
+
+  freeze_gene_encoder: False   # adaptor must learn to convey gene identity
+  freeze_adaptor: False
+  freeze_llama: True           # freeze LLM — forces ALL signal through gene embedding
+
+  max_gene_length: 5000
+  gene_pool_width: 300
+
+  gene_model: "hyenadna-medium-160k-seqlen"
+  llama_model: "/home/namdo/applications/GeneChat/llama_pretrained/vicuna-13b-v1.5"
+  prompt: ""
+
+  max_txt_len: 512
+  end_sym: "</s>"
+  low_resource: False
+  embedding_agg: 1
+  peft_ckpt: ''
+  stage1_ckpt: ''
+
+datasets:
+  seq_mrna:
+    data_type: gene
+    build_info:
+      train:
+        storage: /home/namdo/applications/data_hm/toy_hm
+      valid:
+        storage: /home/namdo/applications/data_hm/toy_hm   # same set — we want to see overfit
+
+run:
+  task: protein_text_pretrain
+  lr_sched: "linear_warmup_cosine_lr"
+  init_lr: 1e-4        # higher LR to overfit faster
+  min_lr: 1e-5
+  warmup_lr: 1e-6
+  accum_grad_iters: 1
+
+  weight_decay: 0
+  max_epoch: 50
+  max_iters: 2000
+  iters_per_inner_epoch: 100   # checkpoint + generation preview every 100 iters
+  log_freq: 10
+
+  batch_size_train: 4
+  batch_size_eval: 1
+  num_workers: 2
+  warmup_steps: 20
+
+  seed: 42
+  output_dir: "/data2/namdo/checkpoint_toy"
+
+  amp: True
+  resume_ckpt_path:
+
+  printable: True
+  evaluate: False
+  train_splits: ["train"]
+  valid_splits: ["valid"]
+
+  device: "cuda"
+  world_size: 1
+  dist_url: "env://"
+  distributed: True
+  use_dist_eval_sampler: False

@@ -7,7 +7,7 @@
 import json
 import argparse
 import os
-os.environ['HF_HOME'] = '/home/akash'
+os.environ['HF_HOME'] = '/home/namdo'
 import random
 
 import wandb
@@ -15,6 +15,11 @@ import wandb
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
+
+# Disable Flash/Memory-efficient SDP — incompatible with current Triton version (trans_b removed)
+torch.backends.cuda.enable_flash_sdp(False)
+torch.backends.cuda.enable_mem_efficient_sdp(False)
+torch.backends.cuda.enable_math_sdp(True)
 
 import genechat.tasks as tasks
 from genechat.common.config import Config
@@ -71,7 +76,8 @@ def get_runner_class(cfg):
 
 def main():
     job_id = now()
-    cfg = Config(parse_args())
+    args = parse_args()
+    cfg = Config(args)
     init_distributed_mode(cfg.run_cfg)
     print('Initialised Distributed model')
     setup_seeds(cfg)
@@ -82,7 +88,8 @@ def main():
     datasets = task.build_datasets(cfg)
     model = task.build_model(cfg)
 
-    wandb.init(project='GeneChat-DNABERT', name='Fine-tuning Vicuna-13B, Freeze DNABERT2')
+    cfg_name = os.path.splitext(os.path.basename(args.cfg_path))[0]
+    wandb.init(project='GeneChat', name=cfg_name)
 
     runner = get_runner_class(cfg)(
         cfg=cfg, job_id=job_id, task=task, model=model, datasets=datasets, wandb=wandb

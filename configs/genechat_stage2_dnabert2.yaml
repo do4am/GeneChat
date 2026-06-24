@@ -1,0 +1,84 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  GeneChat  —  Stage 2 with DNABERT-2 encoder + selective LoRA           ║
+# ║                                                                          ║
+# ║  Starting point: best joint checkpoint (checkpoint_200001)              ║
+# ║  Encoder:  DNABERT-2  (LoRA r=16, unfrozen)                            ║
+# ║  Adaptor:  MLP  768 → 2048 → 5120  (continues training)                ║
+# ║  LLM:      Vicuna-13B  (LoRA r=16, layers 5-10 + 32-39 only)           ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+model:
+  arch: genechat
+  model_type: pretrain_vicuna
+
+  adaptor_type: "mlp"
+
+  freeze_gene_encoder: False
+  freeze_adaptor: False
+  freeze_llama: False
+
+  max_gene_length: 5000
+  keyword_loss_alpha: 3.0
+
+  gene_model: ""
+  llama_model: "/home/namdo/applications/GeneChat/llama_pretrained/vicuna-13b-v1.5"
+  prompt: ""
+
+  max_txt_len: 512
+  end_sym: "</s>"
+  low_resource: False
+  embedding_agg: 1
+
+  peft_ckpt: '/data2/namdo/checkpoint_stage1_mrna/20260326085/checkpoint_35000.pth'
+  stage1_ckpt: ''
+
+datasets:
+  seq_mrna:
+    data_type: gene
+    build_info:
+      train:
+        storage: /home/namdo/applications/data_hm/train_hm
+      valid:
+        storage: /home/namdo/applications/data_hm/valid_hm
+
+run:
+  task: protein_text_pretrain
+
+  lr_sched: "linear_warmup_cosine_lr"
+  init_lr: 5e-6
+  min_lr: 1e-7
+  warmup_lr: 1e-8
+  warmup_steps: 500
+  accum_grad_iters: 1
+
+  weight_decay: 0.05
+  max_epoch: 10
+  max_iters: 50000
+  iters_per_inner_epoch: 5000
+  iters_per_epoch: 5000
+  log_freq: 10
+
+  batch_size_train: 8
+  batch_size_eval: 1
+  num_workers: 4
+
+  seed: 15592
+  output_dir: "/data2/namdo/checkpoint_dnabert2_stage2"
+
+  amp: True
+  resume_ckpt_path: ""
+  reset_iters: True
+
+  printable: True
+  evaluate: False
+  train_splits: ["train"]
+  valid_splits: ["valid"]
+
+  device: "cuda"
+  world_size: 1
+  dist_url: "env://"
+  distributed: False
+
+  # ── Launch ────────────────────────────────────────────────────────────────
+  # CUDA_VISIBLE_DEVICES=3 python train_esm.py --cfg-path configs/genechat_stage2_dnabert2.yaml \
+  #   2>&1 | tee result_mrna/train_dnabert2_stage2.log

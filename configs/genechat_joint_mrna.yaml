@@ -1,0 +1,69 @@
+model:
+  arch: genechat
+  model_type: pretrain_vicuna
+
+  freeze_gene_encoder: False   # DNABERT-2 LoRA (r=8, learns gene-specific embeddings)
+  freeze_adaptor: False        # adaptor trained freely
+  freeze_llama: False          # LLM gets LoRA (r=32, q/k/v/o)
+
+  # mRNA sequences are short — no OOM risk, can afford full sequence
+  max_gene_length: 5000
+  keyword_loss_alpha: 3.0  # upweight gene-name tokens (ALL-CAPS, >=2 uppercase chars)
+
+  gene_model: "hyenadna-medium-160k-seqlen"
+
+  llama_model: "/home/namdo/applications/GeneChat/llama_pretrained/vicuna-13b-v1.5"
+  prompt: ""
+
+  max_txt_len: 512
+  end_sym: "</s>"
+  low_resource: False
+  embedding_agg: 1
+  peft_ckpt: ''
+  stage1_ckpt: ''   # FILL IN after stage1: /data2/namdo/checkpoint_stage1_mrna/<timestamp>/checkpoint_35000.pth
+
+datasets:
+  seq_mrna:                        # uses SeqBuilderMrna / SeqDatasetMrna
+    data_type: gene
+    build_info:
+      train:
+        storage: /home/namdo/applications/data_hm/train_hm
+      valid:
+        storage: /home/namdo/applications/data_hm/valid_hm
+
+run:
+  task: protein_text_pretrain
+  lr_sched: "linear_warmup_cosine_lr"
+  init_lr: 1e-5
+  min_lr: 1e-6
+  warmup_lr: 1e-7
+  accum_grad_iters: 1
+
+  weight_decay: 0.05
+  max_epoch: 200                # must equal max_iters / iters_per_epoch so cosine spans full run
+  max_iters: 1000000            # ~180 passes over 21k training pairs (batch=4) — target overfitting
+  iters_per_inner_epoch: 5000   # ~1 natural epoch per checkpoint (21771/4 ≈ 5443)
+  iters_per_epoch: 5000         # must match iters_per_inner_epoch so LR scheduler steps correctly
+  log_freq: 10
+
+  batch_size_train: 4
+  batch_size_eval: 1
+  num_workers: 4
+  warmup_steps: 500             # 500/32000 = 1.6% warmup, fully within first inner epoch (500 < 4000)
+
+  seed: 15592
+  output_dir: "/data2/namdo/checkpoint_joint_mrna"
+
+  amp: True
+  resume_ckpt_path: '/data2/namdo/checkpoint_joint_mrna/20260402063/checkpoint_620004.pth'
+
+  printable: True
+  evaluate: False
+  train_splits: ["train"]
+  valid_splits: ["valid"]
+
+  device: "cuda"
+  world_size: 1
+  dist_url: "env://"
+  distributed: True
+  use_dist_eval_sampler: False

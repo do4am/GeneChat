@@ -2,28 +2,29 @@ model:
   arch: genechat
   model_type: pretrain_vicuna
 
+  encoder_type: "nt_v2"
+  adaptor_type: "mlp"
+
   freeze_gene_encoder: True
   freeze_adaptor: True
   freeze_llama: False
 
-  max_gene_length: 160000
-  gene_pool_width: 300
+  max_gene_length: 5000
 
-  gene_model: "hyenadna-medium-160k-seqlen"
+  gene_model: ""
   llama_model: "/home/namdo/applications/GeneChat/llama_pretrained/vicuna-13b-v1.5"
 
-  # generation configs
   prompt: ""
-  
+
   max_txt_len: 512
-  end_sym: "###"
+  end_sym: "</s>"
   low_resource: False
   embedding_agg: 1
-  peft_ckpt: '/data2/namdo/checkpoint_joint_v2/20260318084/checkpoint_100000.pth'
-  stage1_ckpt: '/data2/namdo/checkpoint_stage1_v2/20260318061/checkpoint_20000.pth'
+  peft_ckpt: '/data2/namdo/checkpoint_ntv2_stage2/20260429224/checkpoint_5000.pth'
+  stage1_ckpt: ''
 
 datasets:
-  seq:
+  seq_mrna:
     data_type: gene
     build_info:
       train:
@@ -34,5 +35,5 @@ run:
   device: "cuda"
   world_size: 1
   dist_url: "env://"
-  distributed: True
+  distributed: False
   printable: True

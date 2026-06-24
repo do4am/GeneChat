@@ -9,13 +9,8 @@ model:
 
   max_gene_length: 160000
   gene_pool_width: 300
-  
-  gene_model: "hyenadna-medium-160k-seqlen"
 
-  # Stage 2
-  # freeze_protein_encoder: True
-  # freeze_lp: True
-  # freeze_llama: False
+  gene_model: "hyenadna-medium-160k-seqlen"
 
   llama_model: "/home/namdo/applications/GeneChat/llama_pretrained/vicuna-13b-v1.5"
   prompt: ""
@@ -25,47 +20,49 @@ model:
   low_resource: False
   embedding_agg: 1
   peft_ckpt: ''
-  stage1_ckpt: '/data2/namdo/checkpoint_stage1/checkpoint_XXXXX.pth'  # TODO: set after Stage 1 completes
+  stage1_ckpt: ''
 
 datasets:
   seq:
     data_type: gene
     build_info:
       train:
-        storage: /home/namdo/applications/data_hm/train_hm
-      valid:
-        storage: /home/namdo/applications/data_hm/valid_hm
+        storage: /home/namdo/applications/GeneChat/exon_count/data/train_without_duplicates
 
 run:
+  runner: runner_iter_safe  # Use safer runner
   task: protein_text_pretrain
+
   # optimizer
   lr_sched: "linear_warmup_cosine_lr"
-  init_lr: 5e-5
-  min_lr: 5e-7
-  warmup_lr: 1e-7
-  accum_grad_iters: 8
+  init_lr: 1e-4
+  min_lr: 1e-6
+  warmup_lr: 1e-6
+  accum_grad_iters: 4
 
   weight_decay: 0
   max_epoch: 10
-  max_iters: 200000
-  iters_per_inner_epoch: 20000
+  max_iters: 2000000
+  iters_per_inner_epoch: 5000
+
+  # NEW: Checkpoint settings to prevent disk issues
+  checkpoint_freq: 2  # Save every 2 inner epochs (every 10000 iterations) instead of every 5000
+  max_checkpoints: 3  # Keep only 3 most recent checkpoints (auto-delete old ones)
 
   batch_size_train: 1
   batch_size_eval: 1
   num_workers: 4
-  warmup_steps: 5000
+  warmup_steps: 2500
 
   seed: 42
   output_dir: "/home/namdo/applications/GeneChat/exon_count/data/checkpoints"
 
   amp: True
-  resume_ckpt_path: #'/data2/gene_chat/exon_count/data/checkpoints/20250129165/checkpoint_4500.pth'
+  resume_ckpt_path:
 
-  printable: True # whether all ranks can print (True) or only rank 0 can print (False)
-
+  printable: True
   evaluate: False
   train_splits: ["train"]
-  valid_splits: ["valid"]
 
   device: "cuda"
   world_size: 1

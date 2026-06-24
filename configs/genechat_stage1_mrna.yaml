@@ -2,28 +2,29 @@ model:
   arch: genechat
   model_type: pretrain_vicuna
 
-  # Stage 1: train adaptor only
+  # Stage 1 mRNA: train adaptor only (encoder + LLM frozen)
   freeze_gene_encoder: True
   freeze_adaptor: False
   freeze_llama: True
 
-  max_gene_length: 160000
-  gene_pool_width: 300
-  
+  # mRNA sequences are short (~2,000 bp) → far fewer chunks than genomic DNA
+  max_gene_length: 5000    # matches joint config — consistent embedding distribution
+  keyword_loss_alpha: 3.0  # upweight gene-name tokens in loss
+
   gene_model: "hyenadna-medium-160k-seqlen"
 
   llama_model: "/home/namdo/applications/GeneChat/llama_pretrained/vicuna-13b-v1.5"
   prompt: ""
 
   max_txt_len: 512
-  end_sym: "###"
+  end_sym: "</s>"
   low_resource: False
   embedding_agg: 1
   peft_ckpt: ''
   stage1_ckpt: ''
 
 datasets:
-  seq:
+  seq_mrna:                        # uses SeqBuilderMrna / SeqDatasetMrna
     data_type: gene
     build_info:
       train:
@@ -33,31 +34,30 @@ datasets:
 
 run:
   task: protein_text_pretrain
-  # optimizer
   lr_sched: "linear_warmup_cosine_lr"
   init_lr: 1e-4
   min_lr: 1e-6
   warmup_lr: 1e-7
-  accum_grad_iters: 4
+  accum_grad_iters: 1
 
   weight_decay: 0
-  max_epoch: 10
-  max_iters: 20000
-  iters_per_inner_epoch: 10000
+  max_epoch: 7                  # 35000 / 5000 = 7, cosine spans full stage1 run
+  max_iters: 35000
+  iters_per_inner_epoch: 5000      # checkpoint every 5000 iters
+  log_freq: 10
 
-  batch_size_train: 1
+  batch_size_train: 4
   batch_size_eval: 1
   num_workers: 4
   warmup_steps: 500
-  log_freq: 10
 
-  seed: 42
-  output_dir: "/data2/namdo/checkpoint_stage1_v2"
+  seed: 15592
+  output_dir: "/data2/namdo/checkpoint_stage1_mrna"
 
   amp: True
-  resume_ckpt_path:
+  resume_ckpt_path: ""
 
-  printable: True # whether all ranks can print (True) or only rank 0 can print (False)
+  printable: True
 
   evaluate: False
   train_splits: ["train"]
