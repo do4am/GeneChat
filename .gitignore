@@ -2,6 +2,67 @@
 /data/
 /old/
 
+# IDE and project tooling
+.claude/
+.vscode/
+.idea/
+
+# Paper draft and local report
+Report/
+Ref/
+
+# Experiment results and large outputs
+result_mrna/
+results_remote/
+results_remote_feb/
+wandb/
+exon_count/
+data_analysis/
+
+# Checkpoints and training data
+classify_finetune/
+llama_pretrained/
+test_data/
+train_set/
+train_set_classify/
+valid_set/
+
+# Large raw data files
+gene2go
+gene_info
+
+# Stray pip install artifacts (=X.Y.Z files created by broken pip invocations)
+=*
+
+# Root-level result JSON files
+baseline_results.json
+eval_results_*.json
+gene_class_*.json
+go_classification_*.json
+results_*.json
+result_genechat_*.json
+result_mrna_*.json
+results_test.json
+keyword_f1_comparison.json
+gene_class_after_finetune*.json
+gene_class_gemini*.json
+go_classification_gemini*.json
+
+# Generated figures at repo root (regenerate from plot_*.py scripts)
+baseline_comparison_*.pdf
+baseline_comparison_*.png
+seq_length_ablation*.pdf
+seq_length_ablation*.png
+keyword_f1_comparison.pdf
+keyword_f1_comparison.png
+claude_seq_length_trend.*
+
+# Manuscript PDF and unrelated personal files
+GeneChat.pdf
+presentation_liu.tex
+slide4_study_guide.tex
+db_fundamentals.tex
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
