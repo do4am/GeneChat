@@ -43,6 +43,22 @@ python prepare_human_mouse_data.py   # download and align HM sequences
 python prepare_mrna_data.py          # filter, tokenize, train/valid split
 ```
 
+> **Cluster storage (A00 GPU cluster):** Pre-processed datasets, trained checkpoints, and
+> evaluation results for both the original GeneChat and GeneChat-mRNA experiments are stored
+> on the A00 cluster at:
+> ```
+> /data2/genechat/
+> ├── train_set/              # Original NCBI training data
+> ├── valid_set/              # Validation split
+> ├── train_set_mrna/         # HM mRNA training data (Stage-1 and Stage-2)
+> ├── checkpoints/            # Saved model checkpoints
+> └── result_mrna/            # GeneChat-mRNA evaluation outputs
+> ```
+> If you have access to the A00 cluster, copy directly instead of re-running data preparation:
+> ```bash
+> scp -r <user>@a00-cluster:/data2/genechat/train_set ./train_set
+> ```
+
 ### Pretrained Weights
 
 Download Vicuna-13B-v1.5 from [Hugging Face](https://huggingface.co/lmsys/vicuna-13b-v1.5) and set the path in your config:
