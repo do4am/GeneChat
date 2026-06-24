@@ -1,85 +1,145 @@
 # GeneChat: Multi-Modal Large Language Model Enables Gene Function Prediction
 
-This repository contains the code and data of GeneChat: Multi-Modal Large Language Model Enables Gene Function Prediction [Manuscript](https://www.biorxiv.org/content/10.1101/2025.06.05.658031v1).
+[![bioRxiv](https://img.shields.io/badge/bioRxiv-2025.06.05.658031-b31b1b)](https://www.biorxiv.org/content/10.1101/2025.06.05.658031v1)
 
-<!--
-## Examples
-
- ![Eg1](fig/example.png)  
-
-Examples of multi-round dialogues with ProteinChat for Q9U281, Q9XZG9, and Q9LU44.
--->
-
-## Introduction
-- GeneChat is a multi-modal large language model designed to predict gene descriptions from genomic sequences.
-- GeneChat works in a similar way as ChatGPT. It takes as input the genomic sequence and predicts a description about the gene that includes which organism it might belong to, where it might be located and what it's functions are.
-- The GeneChat model consists of a gene encoder, a large language model (LLM), and an adaptor. The gene encoder takes a genomic sequence as input and learns a representation for this gene. The adaptor transforms the gene representation produced by the gene encoder into LLM embedding space. The LLM takes the representation transformed by the adaptor and users' questions about this gene as inputs and generates answers. All these components are trained end-to-end. We use [DNABERT2](https://github.com/facebookresearch/esm) as the gene encoder.
-- To train GeneChat, we designed (gene, prompt, answer) triplets from the NCBI dataset, resulting in ~51K genes.
+GeneChat is a multi-modal large language model that predicts gene function descriptions from genomic sequences. It combines a DNA/mRNA sequence encoder with a large language model (Vicuna-13B), bridged by a linear adaptor trained end-to-end on (sequence, prompt, answer) triplets.
 
 ![overview](fig/GeneChat.png)
 
+## Architecture
+
+| Component | Original GeneChat | GeneChat-mRNA |
+|-----------|-------------------|---------------|
+| Encoder | DNABERT-2 | DNABERT-2 or NT-v2 |
+| Adaptor | Linear projection | Linear projection |
+| LLM | Vicuna-13B-v1.5 | Vicuna-13B-v1.5 |
+| LoRA rank/alpha | 8 / 16 (q, v) | 16 / 32 (q, k, v, o; layers 5–10, 32–39) |
+| Training data | 50,248-gene NCBI | Human–Mouse (HM) mRNA |
+| SimCSE (test) | 0.860 | 0.749 (DNABERT-2), 0.642 (NT-v2) |
 
 ## Getting Started
+
 ### Installation
 
-**1. Prepare the code and the environment**
-
-Git clone our repository, creating a python environment and ativate it via the following command
-
 ```bash
-git clone https://github.com/Shashi-Sekar/GeneChat.git
+git clone https://github.com/do4am/GeneChat.git
 cd GeneChat
 conda env create -f environment.yml
 conda activate genechat
 ```
 
-Verify the installation of `torch` and `torchvision` is successful by running `python -c "import torchvision; print(torchvision.__version__)"`. If it outputs the version number without any warnings or errors, then you are good to go. __If it outputs any warnings or errors__, try to uninstall `torch` by `conda uninstall pytorch torchvision torchaudio cudatoolkit` and then reinstall them following [here](https://pytorch.org/get-started/previous-versions/#v1121). You need to find the correct command according to the CUDA version your GPU driver supports (check `nvidia-smi`). 
+Verify: `python -c "import torch; print(torch.__version__)"`.
+You need at least **70 GB GPU memory** for training, 40 GB for inference.
 
-**2. Dataset**
+### Dataset
 
-The dataset contains 51,411 genes. It is curated from [NCBI](https://www.ncbi.nlm.nih.gov/gene). 
-The collected data can be found on the drive [here](https://drive.google.com/drive/folders/1g0Pe0HxfzdhXWbG54rkd-Iya7c6wYZdO?usp=sharing)
-You will see a `data` folder with two subfolders `train_set`, `test_set`.
+**Original GeneChat dataset (~51K NCBI genes)**
+Download from [Google Drive](https://drive.google.com/drive/folders/1g0Pe0HxfzdhXWbG54rkd-Iya7c6wYZdO?usp=sharing) and place as `train_set/` and `test_set/`.
 
-**3. Prepare the pretrained Vicuna weights**
-
-The current version of ProteinChat is built on Vicuna-13B-v1.5.
-Please download Vicuna weights from [https://huggingface.co/lmsys/vicuna-13b-v1.5](https://huggingface.co/lmsys/vicuna-13b-v1.5).
-Then, set the path to the vicuna weight in the config file
-[configs/genechat_stage1.yaml](configs/genechat_stage1.yaml#L15).
-
-
-### Training
-**You need at least 70 GB GPU memory for the training.** 
-
-The training configuration file is [configs/genechat_stage1.yaml](configs/genechat_stage1.yaml). In addition, you may want to change the number of epochs and other hyper-parameters there, such as `max_epoch`, `init_lr`, `min_lr`,`warmup_steps`, `batch_size_train`. Please adjust `iters_per_epoch` so that `iters_per_epoch` * `batch_size_train` = your training set size. 
-
-Also, set your desired output directory [here](configs/proteinchat_stage1.yaml#53).
-
-Start the training by running 
+**GeneChat-mRNA dataset (Human–Mouse mRNA)**
+Build using the preparation scripts:
 ```bash
+python prepare_human_mouse_data.py   # download and align HM sequences
+python prepare_mrna_data.py          # filter, tokenize, train/valid split
+```
+
+### Pretrained Weights
+
+Download Vicuna-13B-v1.5 from [Hugging Face](https://huggingface.co/lmsys/vicuna-13b-v1.5) and set the path in your config:
+```yaml
+# configs/genechat_stage1.yaml
+model:
+  llama_model: "/path/to/vicuna-13b-v1.5"
+```
+
+Stage-1 GeneChat checkpoint (NCBI, 47k genes): [Google Drive](https://drive.google.com/drive/folders/1AaSzc9nlh_kfOJDuhLBfDHo3pGKrcKAE?usp=sharing)
+
+## Training
+
+### Original GeneChat (NCBI dataset)
+
+```bash
+# Stage 1: train adaptor only
 bash finetune.sh --cfg-path configs/genechat_stage1.yaml
-``` 
 
-### Evaluation
+# Stage 2: LoRA fine-tune encoder + adaptor
+bash finetune.sh --cfg-path configs/genechat_stage2.yaml
 
-Modify the checkpoint paths in [configs/genechat_eval.yaml](configs/genechat_eval.yaml) to the location of your checkpoint.
-We provide a stage1_ckpt [here](https://drive.google.com/drive/folders/1AaSzc9nlh_kfOJDuhLBfDHo3pGKrcKAE?usp=sharing) by training on 47,275 genes. peft_ckpt can be set empty during evaluation.
+# Stage 3: instruction fine-tuning (optional)
+bash finetune.sh --cfg-path configs/genechat_stage3.yaml
+```
 
-You can evaluate the model by running
+### GeneChat-mRNA (HM mRNA dataset)
+
 ```bash
+# DNABERT-2 encoder
+bash finetune.sh --cfg-path configs/genechat_stage1_mrna.yaml
+bash finetune.sh --cfg-path configs/genechat_stage2_dnabert2.yaml
+
+# NT-v2 encoder
+bash finetune.sh --cfg-path configs/genechat_stage1_ntv2.yaml
+bash finetune.sh --cfg-path configs/genechat_stage2_ntv2.yaml
+```
+
+Selective-layer LoRA (layers 5–10 and 32–39 only) is configured inside each Stage-2 YAML. The manual gradient-freezing logic lives in [genechat/models/genechat.py](genechat/models/genechat.py).
+
+## Evaluation
+
+```bash
+# Interactive demo
 bash demo.sh
-``` 
 
+# Batch inference (single-question)
+python inference_all.py --cfg-path configs/genechat_eval.yaml
 
-## Acknowledgement
+# Aspect-based evaluation (10 targeted questions per gene)
+python inference_aspect.py --cfg-path configs/genechat_eval_dnabert2_stage2.yaml
 
-+ [DNABERT2](https://github.com/MAGICS-LAB/DNABERT_2)
-+ [HyenaDNA](https://github.com/HazyResearch/hyena-dna)
-+ [MiniGPT-4](https://minigpt-4.github.io/) 
-+ [Lavis](https://github.com/salesforce/LAVIS)
-+ [Vicuna](https://github.com/lm-sys/FastChat)
+# SimCSE semantic similarity scoring
+python eval_semantic_similarity.py --results_file <path/to/results.json>
 
+# GO functional classification
+python eval_go_classification.py --results_file <path/to/results.json>
+```
+
+## Reproduce Figures
+
+All plotting scripts write to `Report/fig/` (not committed). Run from the repo root:
+
+```bash
+python plot_aspect_evaluation.py      # Fig: single-question vs. aspect-based SimCSE
+python plot_stage2_convergence.py     # Fig: Stage-2 training convergence
+python plot_mrna_metrics.py           # Fig: BLEU + SimCSE multi-metric bar chart
+python plot_go_classification.py      # Fig: GO classification accuracy
+python plot_ablation_studies.py       # Fig: encoder and adaptor ablations
+```
+
+## Project Structure
+
+```
+GeneChat/
+├── genechat/               # Core model library
+│   ├── models/             # GeneChat model, gene encoder, adaptor
+│   ├── datasets/           # Dataset builders and loaders
+│   ├── runners/            # Training loop and checkpoint management
+│   └── tasks/              # Task-specific forward/eval logic
+├── configs/                # Training and evaluation YAML configs
+├── prepare_*.py            # Data preparation scripts
+├── inference_*.py          # Inference scripts
+├── eval_*.py               # Evaluation scripts
+├── plot_*.py               # Figure generation scripts
+├── finetune.sh             # Training entry point
+└── environment.yml         # Conda environment
+```
+
+## Acknowledgements
+
+- [DNABERT-2](https://github.com/MAGICS-LAB/DNABERT_2)
+- [Nucleotide Transformer (NT-v2)](https://github.com/instadeepai/nucleotide-transformer)
+- [MiniGPT-4](https://minigpt-4.github.io/)
+- [Lavis](https://github.com/salesforce/LAVIS)
+- [Vicuna](https://github.com/lm-sys/FastChat)
 
 ## License
-This repository is under [BSD 3-Clause License](LICENSE.md).
+
+[BSD 3-Clause License](LICENSE.md)
