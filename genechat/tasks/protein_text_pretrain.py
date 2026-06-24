@@ -14,39 +14,12 @@ class ProteinTextPretrainTask(BaseTask):
     def __init__(self):
         super().__init__()
 
-    # def valid_step(self, model, samples):
-
-        # run_cfg = slf.cfg.run_cfg
-        # captions = model.generate(
-        #     samples,
-        #     use_nucleus_sampling=False,
-        #     num_beams=self.num_beams,
-        #     max_length=self.max_len,
-        #     min_length=self.min_len,
-        # )
-
-        # img_ids = samples["image_id"]
-        # for caption, img_id in zip(captions, img_ids):
-        #     results.append({"caption": caption, "image_id": int(img_id)})
-
-        # return results
-
-    # def after_evaluation(self, val_result, split_name, epoch, **kwargs):
-        # metrics = [1]
-        # eval_result_file = self.save_result(
-        #     result=val_result,
-        #     result_dir=registry.get_path("result_dir"),
-        #     filename="{}_epoch{}".format(split_name, epoch),
-        #     remove_duplicate="image_id",
-        # )
-
-        # if self.report_metric:
-        #     metrics = self._report_metrics(
-        #         eval_result_file=eval_result_file, split_name=split_name
-        #     )
-        # else:
-        #     metrics = {"agg_metrics": 0.0}
-
-        # return metrics
+    def after_evaluation(self, val_result, split_name, epoch, **kwargs):
+        # val_result is {"loss": "2.345"} from base_task.evaluation()
+        # agg_metrics must be higher = better; use negative loss
+        avg_loss = float(val_result.get("loss", 0.0))
+        import logging
+        logging.info("Validation loss ({}): {:.4f}".format(split_name, avg_loss))
+        return {"agg_metrics": -avg_loss, "loss": avg_loss}
 
 

@@ -8,6 +8,8 @@
 from genechat.common.registry import registry
 from genechat.tasks.base_task import BaseTask
 from genechat.tasks.protein_text_pretrain import ProteinTextPretrainTask
+from genechat.tasks.protein_text_reinforce import ProteinTextReinforceTask  # Stage 3 only
+from genechat.tasks.protein_text_dpo import ProteinTextDPO
 
 
 def setup_task(cfg):
@@ -23,4 +25,6 @@ def setup_task(cfg):
 __all__ = [
     "BaseTask",
     "ProteinTextPretrainTask",
+    "ProteinTextReinforceTask",
+    "ProteinTextDPO",
 ]

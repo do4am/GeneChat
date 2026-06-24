@@ -91,7 +91,9 @@ class RunnerBase:
             if self.use_distributed:
                 if self._wrapped_model is None:
                     self._wrapped_model = DDP(
-                        self._model, device_ids=[self.config.run_cfg.gpu], find_unused_parameters=True
+                        self._model, device_ids=[self.config.run_cfg.gpu],
+                        find_unused_parameters=False,  # False required when gradient_checkpointing is enabled
+                        static_graph=True,             # graph doesn't change across steps → avoids double-ready error
                     )
 
                 print("Model wrapped with DDP")
@@ -452,7 +454,7 @@ class RunnerBase:
             if self.evaluate_only:
                 break
 
-            if self.config.run_cfg.distributed:
+            if self.config.run_cfg.distributed and dist.is_initialized():
                 dist.barrier()
 
         # testing phase
@@ -639,16 +641,31 @@ class RunnerBase:
     def _save_checkpoint(self, cur_epoch, is_best=False):
         """
         Save the checkpoint at the current epoch.
+        Saves only LoRA adapter weights + adaptor projection layer to keep
+        checkpoint size small (~100-300 MB instead of ~25 GB).
         """
         model_no_ddp = self.unwrap_dist_model(self.model)
-        param_grad_dic = {
-            k: v.requires_grad for (k, v) in model_no_ddp.named_parameters()
-        }
-        state_dict = model_no_ddp.state_dict()
-        for k in list(state_dict.keys()):
-            if k in param_grad_dic.keys() and not param_grad_dic[k]:
-                # delete parameters that do not require gradient
-                del state_dict[k]
+        full_state_dict = model_no_ddp.state_dict()
+
+        # Keep only LoRA adapter weights and the gene→LLM adaptor projection.
+        # This excludes the frozen 13B base model weights entirely.
+        lora_keys = [k for k in full_state_dict if "lora_" in k]
+        proj_keys  = [k for k in full_state_dict if "hyena_llama_proj" in k]
+        keep_keys  = set(lora_keys + proj_keys)
+
+        # Fallback: if no lora_ keys found, keep all trainable params as before
+        if not keep_keys:
+            param_grad_dic = {k: v.requires_grad for k, v in model_no_ddp.named_parameters()}
+            keep_keys = {k for k in full_state_dict if param_grad_dic.get(k, False)}
+
+        state_dict = {k: full_state_dict[k] for k in keep_keys}
+        logging.info(
+            "Saving checkpoint: {} tensors ({:.1f} MB)".format(
+                len(state_dict),
+                sum(v.nelement() * v.element_size() for v in state_dict.values()) / 1e6,
+            )
+        )
+
         save_obj = {
             "model": state_dict,
             "optimizer": self.optimizer.state_dict(),

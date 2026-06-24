@@ -1,14 +1,15 @@
 """
- Copyright (c) 2022, salesforce.com, inc.
- All rights reserved.
- SPDX-License-Identifier: BSD-3-Clause
- For full license text, see the LICENSE file in the repo root or https://opensource.org/licenses/BSD-3-Clause
+Modified iteration-based runner with safer checkpoint saving:
+1. Saves checkpoints less frequently
+2. Auto-deletes old checkpoints to save disk space
+3. Handles disk errors gracefully
 """
 
 import datetime
 import logging
 import os
 import time
+import glob
 
 import torch
 import torch.distributed as dist
@@ -21,37 +22,35 @@ from genechat.runners.runner_base import RunnerBase
 from torch.utils.data.dataset import ChainDataset
 
 
-@registry.register_runner("runner_iter")
-class RunnerIter(RunnerBase):
+@registry.register_runner("runner_iter_safe")
+class RunnerIterSafe(RunnerBase):
     """
-    Run training based on the number of iterations. This is common when
-    the training dataset size is large. Underhood logic is similar to
-    epoch-based training by considering every #iters_per_inner_epoch as an
-    inner epoch.
-
-    In iter-based runner, after every #iters_per_inner_epoch steps, we
-
-        1) do a validation epoch;
-        2) schedule the learning rate;
-        3) save the checkpoint.
-
-    We refer every #iters_per_inner_epoch steps as an inner epoch.
+    Safer iteration-based runner with:
+    - Configurable checkpoint frequency
+    - Auto-deletion of old checkpoints
+    - Disk space checking before saving
     """
 
     def __init__(self, cfg, task, model, datasets, wandb, job_id):
         super().__init__(cfg, task, model, datasets, wandb, job_id)
 
         self.start_iters = 0
-
         self.max_iters = int(self.config.run_cfg.get("max_iters", -1))
         assert self.max_iters > 0, "max_iters must be greater than 0."
 
         self.iters_per_inner_epoch = int(
             self.config.run_cfg.get("iters_per_inner_epoch", -1)
         )
-        assert (
-            self.iters_per_inner_epoch > 0
-        ), "iters_per_inner_epoch must be greater than 0."
+        assert self.iters_per_inner_epoch > 0, "iters_per_inner_epoch must be greater than 0."
+
+        # New: configurable checkpoint frequency
+        self.checkpoint_freq = int(self.config.run_cfg.get("checkpoint_freq", 1))
+        logging.info(f"Saving checkpoints every {self.checkpoint_freq} inner epochs "
+                    f"({self.checkpoint_freq * self.iters_per_inner_epoch} iterations)")
+
+        # New: max checkpoints to keep
+        self.max_checkpoints = int(self.config.run_cfg.get("max_checkpoints", 3))
+        logging.info(f"Keeping maximum {self.max_checkpoints} checkpoints")
 
     @property
     def max_epoch(self):
@@ -62,7 +61,6 @@ class RunnerIter(RunnerBase):
         try:
             return self.train_loader.epoch
         except AttributeError:
-            # pipeline data (e.g. LAION) is streaming, have no concept of epoch
             return 0
 
     def _progress(self, cur_iters):
@@ -76,13 +74,16 @@ class RunnerIter(RunnerBase):
         self.log_config()
 
         # resume from checkpoint if specified
-        if not self.evaluate_only and self.resume_ckpt_path:
+        if not self.evaluate_only and self.resume_ckpt_path is not None:
             self._load_checkpoint(self.resume_ckpt_path)
+
+        inner_epoch_counter = 0
 
         for start_iters in range(
             self.start_iters, self.max_iters, self.iters_per_inner_epoch
         ):
             end_iters = start_iters + self.iters_per_inner_epoch
+            inner_epoch_counter += 1
 
             # training phase
             if not self.evaluate_only:
@@ -93,10 +94,16 @@ class RunnerIter(RunnerBase):
                 )
 
                 train_stats = self.train_iters(self.cur_epoch, start_iters, wandb=self.wandb)
+
+                # Save checkpoint only every N inner epochs
+                if inner_epoch_counter % self.checkpoint_freq == 0:
+                    self._save_checkpoint(end_iters, is_best=False)
+                else:
+                    logging.info(f"Skipping checkpoint save (will save every {self.checkpoint_freq} epochs)")
+
                 self.log_stats(split_name="train", stats=train_stats)
 
             # evaluation phase
-            val_loss = None
             if len(self.valid_splits) > 0:
                 for split_name in self.valid_splits:
                     logging.info("Evaluating on {}.".format(split_name))
@@ -111,33 +118,21 @@ class RunnerIter(RunnerBase):
                             ), "No agg_metrics found in validation log."
 
                             agg_metrics = val_log["agg_metrics"]
-                            val_loss = val_log.get("loss")
-                            if agg_metrics > best_agg_metric and split_name in ("val", "valid"):
+                            if agg_metrics > best_agg_metric and split_name == "val":
                                 best_iters, best_agg_metric = end_iters, agg_metrics
                                 self._save_checkpoint(end_iters, is_best=True)
 
                             val_log.update({"best_iters": best_iters})
                             self.log_stats(val_log, split_name)
 
-            if not self.evaluate_only:
-                train_loss = train_stats.get("loss", "N/A") if train_stats else "N/A"
-                logging.info(
-                    "Checkpoint @ iters {} | train_loss: {} | val_loss: {}".format(
-                        end_iters, train_loss, val_loss if val_loss is not None else "N/A"
-                    )
-                )
-                self._save_checkpoint(end_iters, is_best=False)
-                self.wandb.log({"train_loss_epoch": float(train_loss) if train_loss != "N/A" else 0,
-                                "val_loss_epoch": float(val_loss) if val_loss is not None else 0,
-                                "iters": end_iters})
-
             else:
-                pass  # checkpoint already saved above with train/val loss logging
+                # if no validation split is provided, save checkpoint based on frequency
+                if not self.evaluate_only and inner_epoch_counter % self.checkpoint_freq == 0:
+                    self._save_checkpoint(end_iters, is_best=False)
 
             if self.evaluate_only:
                 break
-            if dist.is_initialized():
-                dist.barrier()
+            dist.barrier()
 
         # testing phase
         self.evaluate(cur_epoch=self.cur_epoch)
@@ -165,38 +160,89 @@ class RunnerIter(RunnerBase):
             wandb=wandb
         )
 
+    def _check_disk_space(self, required_gb=5):
+        """Check if there's enough disk space"""
+        import shutil
+        stat = shutil.disk_usage(self.output_dir)
+        free_gb = stat.free / (1024**3)
+
+        if free_gb < required_gb:
+            logging.warning(f"Low disk space: {free_gb:.2f} GB free (need {required_gb} GB)")
+            return False
+        return True
+
+    def _cleanup_old_checkpoints(self):
+        """Delete old checkpoints, keeping only the N most recent"""
+        checkpoint_pattern = os.path.join(self.output_dir, "checkpoint_*.pth")
+        checkpoints = glob.glob(checkpoint_pattern)
+
+        # Don't delete "best" checkpoint
+        checkpoints = [c for c in checkpoints if "best" not in c]
+
+        if len(checkpoints) > self.max_checkpoints:
+            # Sort by modification time (oldest first)
+            checkpoints.sort(key=os.path.getmtime)
+
+            # Delete oldest checkpoints
+            to_delete = checkpoints[:len(checkpoints) - self.max_checkpoints]
+            for ckpt_path in to_delete:
+                try:
+                    logging.info(f"Deleting old checkpoint: {ckpt_path}")
+                    os.remove(ckpt_path)
+                except Exception as e:
+                    logging.warning(f"Failed to delete {ckpt_path}: {e}")
+
     @main_process
     def _save_checkpoint(self, cur_iters, is_best=False):
-        # Save only trainable weights to avoid 25GB full checkpoints:
-        # lora_ keys (encoder LoRA + LLM LoRA) + hyena_llama_proj (adaptor)
-        full_state = self.unwrap_dist_model(self.model).state_dict()
-        save_state = {k: v for k, v in full_state.items()
-                      if "lora" in k.lower() or "hyena_llama_proj" in k or "chunk_attention" in k}
-        if not save_state:
-            # Fallback: nothing matched, save full state
-            save_state = full_state
+        """Save checkpoint with disk space checking and cleanup"""
+
+        # Check disk space first
+        if not self._check_disk_space(required_gb=5):
+            logging.warning("Not enough disk space, attempting cleanup...")
+            self._cleanup_old_checkpoints()
+
+            if not self._check_disk_space(required_gb=5):
+                logging.error("Still not enough disk space after cleanup! Skipping checkpoint save.")
+                return
+
         save_obj = {
-            "model": save_state,
+            "model": self.unwrap_dist_model(self.model).state_dict(),
             "optimizer": self.optimizer.state_dict(),
-            "scaler": self.scaler.state_dict() if self.scaler else None,
-            "lr_scheduler": self.lr_scheduler.state_dict(),
             "config": self.config.to_dict(),
+            "scaler": self.scaler.state_dict() if self.scaler else None,
             "iters": cur_iters,
         }
-        mb = sum(v.element_size() * v.nelement() for v in save_state.values()) / 1e6
-        logging.info("Saving checkpoint ({} keys, {:.1f} MB) at iters {}.".format(
-            len(save_state), mb, cur_iters))
+
         save_to = os.path.join(
             self.output_dir,
             "checkpoint_{}.pth".format("best" if is_best else cur_iters),
         )
-        logging.info("Saving to {}.".format(save_to))
-        torch.save(save_obj, save_to)
+
+        logging.info("Saving checkpoint at iters {} to {}.".format(cur_iters, save_to))
+
+        try:
+            torch.save(save_obj, save_to)
+            logging.info("Checkpoint saved successfully")
+
+            # Cleanup old checkpoints after successful save
+            if not is_best:
+                self._cleanup_old_checkpoints()
+
+        except Exception as e:
+            logging.error(f"Failed to save checkpoint: {e}")
+            logging.error("Attempting to free up space...")
+            self._cleanup_old_checkpoints()
+
+            # Try one more time
+            try:
+                torch.save(save_obj, save_to)
+                logging.info("Checkpoint saved successfully on retry")
+            except Exception as e2:
+                logging.error(f"Failed to save checkpoint even after cleanup: {e2}")
+                raise
 
     def _load_checkpoint(self, url_or_filename):
-        """
-        Resume from a checkpoint.
-        """
+        """Resume from a checkpoint."""
         if is_url(url_or_filename):
             cached_file = download_cached_file(
                 url_or_filename, check_hash=False, progress=True
@@ -208,51 +254,22 @@ class RunnerIter(RunnerBase):
             raise RuntimeError("checkpoint url or path is invalid")
 
         state_dict = checkpoint["model"]
-        self.unwrap_dist_model(self.model).load_state_dict(state_dict, strict=False)
+        self.unwrap_dist_model(self.model).load_state_dict(state_dict)
 
-        if "optimizer" in checkpoint:
-            self.optimizer.load_state_dict(checkpoint["optimizer"])
-        if self.scaler and "scaler" in checkpoint and checkpoint["scaler"] is not None:
+        self.optimizer.load_state_dict(checkpoint["optimizer"])
+        if self.scaler and "scaler" in checkpoint:
             self.scaler.load_state_dict(checkpoint["scaler"])
-        if "lr_scheduler" in checkpoint:
-            self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
 
-        ckpt_iters = checkpoint["iters"]
-        if self.config.run_cfg.get("reset_iters", False) and ckpt_iters >= self.max_iters:
-            # Cross-stage resume: checkpoint is from a previous stage with higher iter count
-            self.start_iters = 0
-            logging.info("reset_iters=True: starting Stage 3 from iter 0 (ckpt was at {})".format(ckpt_iters))
-        else:
-            self.start_iters = ckpt_iters + 1
+        self.start_iters = checkpoint["iters"] + 1
         logging.info("Resume checkpoint from {}".format(url_or_filename))
 
     @property
     def dataloaders(self) -> dict:
-        """
-        A property to get and create dataloaders by split just in need.
-
-        If no train_dataset_ratio is provided, concatenate map-style datasets and
-        chain wds.DataPipe datasets separately. Training set becomes a tuple
-        (ConcatDataset, ChainDataset), both are optional but at least one of them is
-        required. The resultant ConcatDataset and ChainDataset will be sampled evenly.
-
-        If train_dataset_ratio is provided, create a MultiIterLoader to sample
-        each dataset by ratios during training.
-
-        Currently do not support multiple datasets for validation and test.
-
-        Returns:
-            dict: {split_name: (tuples of) dataloader}
-        """
+        """Inherited from RunnerBase - same implementation"""
         if self._dataloaders is None:
-            # reoganize datasets by split and concatenate/chain if necessary
             dataset_ratios = self.config.run_cfg.get("train_dataset_ratios", None)
 
             if dataset_ratios is None:
-                # concatenate map-style datasets and chain wds.DataPipe datasets separately
-                # training set becomes a tuple (ConcatDataset, ChainDataset), both are
-                # optional but at least one of them is required. The resultant ConcatDataset
-                # and ChainDataset will be sampled evenly.
                 logging.info(
                     "dataset_ratios not specified, datasets will be concatenated (map-style datasets) or chained (webdataset.DataPipeline)."
                 )
@@ -260,7 +277,6 @@ class RunnerIter(RunnerBase):
                 datasets = reorg_datasets_by_split(self.datasets)
                 self.datasets = concat_datasets(datasets)
             else:
-                # create multi-loader with the provided ratios, without concatenating or chaining
                 missing_keys = [k for k in dataset_ratios if k not in self.datasets]
                 if len(missing_keys) > 0:
                     raise ValueError(
@@ -279,17 +295,15 @@ class RunnerIter(RunnerBase):
 
                 dataset_ratios = [float(dataset_ratios[k]) for k in self.datasets]
                 self.datasets = reorg_datasets_by_split(self.datasets)
-                # to keep the same structure as return value of concat_datasets
                 self.datasets = {
                     k: v[0] if len(v) == 1 else v for k, v in datasets.items()
                 }
 
-            # print dataset statistics after concatenation/chaining
+            # print dataset statistics
             for split_name in self.datasets:
                 if isinstance(self.datasets[split_name], tuple) or isinstance(
                     self.datasets[split_name], list
                 ):
-                    # mixed wds.DataPipeline and torch.utils.data.Dataset
                     num_records = sum(
                         [
                             len(d)
@@ -298,13 +312,10 @@ class RunnerIter(RunnerBase):
                             for d in self.datasets[split_name]
                         ]
                     )
-
                 else:
                     try:
-                        # a single map-style dataset
                         num_records = len(self.datasets[split_name])
                     except TypeError:
-                        # a single wds.DataPipeline or ChainDataset
                         num_records = -1
                         logging.info(
                             "Only a single wds.DataPipeline dataset, no __len__ attribute."
@@ -317,9 +328,7 @@ class RunnerIter(RunnerBase):
                         )
                     )
 
-            # create dataloaders
             split_names = sorted(self.datasets.keys())
-
             datasets = [self.datasets[split] for split in split_names]
             is_trains = [split in self.train_splits for split in split_names]
 

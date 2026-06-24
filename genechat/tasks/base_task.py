@@ -16,6 +16,17 @@ from genechat.common.registry import registry
 from genechat.datasets.data_utils import prepare_sample
 import wandb
 
+_gen_review_file = None   # lazily opened on first write
+
+def _write_gen_review(line):
+    """Append a line to log_gen_review.txt in the current output directory."""
+    global _gen_review_file
+    if _gen_review_file is None:
+        out_dir = registry.get_path("output_dir") or "."
+        path = os.path.join(out_dir, "log_gen_review.txt")
+        _gen_review_file = open(path, "a", buffering=1)  # line-buffered
+    _gen_review_file.write(line + "\n")
+
 class BaseTask:
     def __init__(self, **kwargs):
         super().__init__()
@@ -271,35 +282,84 @@ class BaseTask:
             lr_scheduler.step(cur_epoch=inner_epoch, cur_step=i)
 
 
-            with torch.cuda.amp.autocast(enabled=use_amp):
-                loss = self.train_step(model=model, samples=samples)
+            try:
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    loss = self.train_step(model=model, samples=samples)
 
-            end_train_step = time.time()
-            # print(f"[base_task] _train_inner_loop end_train_step: {end_train_step - end_update_sample}")
-
-            # after_train_step()
-            if use_amp:
-                scaler.scale(loss).backward()
-            else:
-                loss.backward()
-
-            end_train_step = time.time()
-            # print(f"[base_task] _train_inner_loop end_train_step: {end_train_step - end_update_sample}")
-
-            # update gradients every accum_grad_iters iterations
-            if (i + 1) % accum_grad_iters == 0:
                 if use_amp:
-                    scaler.step(optimizer)
-                    scaler.update()                     
-                else:    
-                    optimizer.step()
-                optimizer.zero_grad()
-            end_optimizer = time.time()
-            # print(f"[base_task] _train_inner_loop end_optimizer: {end_optimizer - end_train_step}")
-            metric_logger.update(loss=loss.item())
-            metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
 
-            wandb.log({'loss': loss.item()})
+                # Tasks that bypass DDP in train_step (e.g. REINFORCE) manually
+                # all-reduce their own gradients via this hook.
+                if hasattr(self, 'post_backward_sync'):
+                    _raw = model.module if hasattr(model, 'module') else model
+                    self.post_backward_sync(_raw)
+
+                # update gradients every accum_grad_iters iterations
+                if (i + 1) % accum_grad_iters == 0:
+                    if use_amp:
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
+                    optimizer.zero_grad()
+
+                metric_logger.update(loss=loss.item())
+                metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+                wandb.log({'loss': loss.item()})
+
+                # Periodically clear cache to prevent fragmentation buildup
+                if (i + 1) % 1000 == 0:
+                    torch.cuda.empty_cache()
+
+                # Generation preview every 10 iters — catch mode collapse early
+                _PREVIEW_FREQ = 100
+                global_iter = (start_iters if start_iters is not None else inner_epoch * iters_per_epoch) + i + 1
+                if (i + 1) % _PREVIEW_FREQ == 0 and is_main_process():
+                    raw_model = model.module if hasattr(model, "module") else model
+                    if hasattr(raw_model, "generate_preview") and \
+                            "text_input" in samples and "prompt" in samples:
+                        import random as _random
+                        _idx = _random.randrange(len(samples["prompt"])) if isinstance(samples["prompt"], (list, tuple)) else 0
+                        prompt0 = samples["prompt"][_idx]
+                        target0 = samples["text_input"][_idx]
+                        # Extract gene ID from prompt: "USER: [Gene XXXXX]<geneHere> Q ASSISTANT:"
+                        import re as _re
+                        _m = _re.search(r'\[Gene ([^\]]+)\]', prompt0)
+                        gene_id_str = _m.group(1) if _m else "unknown"
+                        seq_type = samples["seq_type"][_idx] if "seq_type" in samples else "?"
+                        seq_len  = len(samples["seq"][0][_idx]) if "seq" in samples else "?"
+                        # Extract the question (between <geneHere> and ASSISTANT:)
+                        q_start = prompt0.find("<geneHere>") + len("<geneHere>")
+                        q_end   = prompt0.find("ASSISTANT:")
+                        question = prompt0[q_start:q_end].strip() if q_start > 10 and q_end > 0 else prompt0
+                        try:
+                            raw_model.eval()
+                            predicted = raw_model.generate_preview(samples, max_new_tokens=150, idx=_idx)
+                            raw_model.train()
+                            msg = (
+                                f"\n[global_iter {global_iter}] --- GENERATION PREVIEW ---"
+                                f"\n  GeneID: {gene_id_str} [{seq_type}, len={seq_len}]"
+                                f"\n  Q  : {question}"
+                                f"\n  GT : {str(target0)}"
+                                f"\n  GEN: {predicted}"
+                            )
+                            _write_gen_review(msg)
+                        except Exception as _exc:
+                            raw_model.train()
+                            logging.warning(f"[global_iter {global_iter}] generate_preview failed: {_exc}")
+
+            except torch.cuda.OutOfMemoryError:
+                try:
+                    seq_len = len(samples["seq"][0][0]) if "seq" in samples else "unknown"
+                except Exception:
+                    seq_len = "unknown"
+                logging.warning("OOM at iter {}, seq_len={}, skipping batch.".format(i, seq_len))
+                torch.cuda.empty_cache()
+                optimizer.zero_grad()
+                continue
 
             # print(f"[base_task] _train_inner_loop ITERATION end -----------------------------{time.time()-iter_start}")
 

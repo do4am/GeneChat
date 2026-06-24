@@ -7,5 +7,6 @@
 
 from genechat.runners.runner_base import RunnerBase
 from genechat.runners.runner_iter import RunnerIter
+from genechat.runners.runner_iter_safe import RunnerIterSafe
 
-__all__ = ["RunnerBase", "RunnerIter"]
+__all__ = ["RunnerBase", "RunnerIter", "RunnerIterSafe"]
