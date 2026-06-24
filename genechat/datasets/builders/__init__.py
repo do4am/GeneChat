@@ -7,10 +7,14 @@
 
 from genechat.datasets.builders.base_dataset_builder import load_dataset_config
 from genechat.datasets.builders.seq_text_pair_builder import SeqBuilder
+from genechat.datasets.builders.seq_text_pair_builder_mrna import SeqBuilderMrna
+from genechat.datasets.builders.dpo_builder import DPOBuilder
 from genechat.common.registry import registry
 
 __all__ = [
-    "SeqBuilder"
+    "SeqBuilder",
+    "SeqBuilderMrna",
+    "DPOBuilder",
 ]
 
 
