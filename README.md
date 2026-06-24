@@ -155,6 +155,31 @@ GeneChat/
 └── environment.yml         # Conda environment
 ```
 
+## Report
+
+The full technical report covering methodology, experiments, and analysis is available on Overleaf:
+**[https://www.overleaf.com/project/696898fa315570270f8cdb18](https://www.overleaf.com/project/696898fa315570270f8cdb18)**
+
+The preprint is also available on bioRxiv:
+**[https://www.biorxiv.org/content/10.1101/2025.06.05.658031v1](https://www.biorxiv.org/content/10.1101/2025.06.05.658031v1)**
+
+## Conclusions and Future Directions
+
+**What we found:**
+GeneChat demonstrates that genomic sequence encoders can be coupled with large language models to produce meaningful natural-language descriptions of gene function. The original model (DNABERT-2 encoder, NCBI 50k-gene corpus) achieves a SimCSE score of 0.860 on the test set. The GeneChat-mRNA extension, trained on a human-mouse mRNA dataset with a two-stage curriculum and selective-layer LoRA, reaches SimCSE 0.749 (DNABERT-2) and 0.642 (NT-v2). Aspect-based evaluation — decomposing gene function into 10 targeted questions — reveals that the performance ceiling is primarily set by the encoder's ability to distinguish similar sequences, rather than the LLM's language generation capacity.
+
+**Limitations of the current work:**
+- The mRNA encoder (DNABERT-2 / NT-v2) was trained on a relatively small HM dataset, limiting generalization to less-studied genes.
+- The linear adaptor is a weak bridge; richer cross-attention or MLP projections may better transfer sequence representations into LLM embedding space.
+- Evaluation relies on SimCSE and BLEU, which capture surface-level semantic similarity but do not directly measure biological accuracy.
+
+**Suggested directions for future work:**
+- **Stronger encoders:** Replace DNABERT-2 with larger or more recent DNA/RNA foundation models (e.g., HyenaDNA, Evo, RNA-FM) and evaluate whether the encoder bottleneck shifts.
+- **Richer adaptors:** Replace the linear projection with a multi-layer MLP or cross-attention bridge to improve encoder-to-LLM alignment.
+- **Larger and more diverse training data:** Expand beyond the HM mRNA dataset to include multi-species transcriptomes and non-coding RNA families.
+- **Biological evaluation metrics:** Complement SimCSE with GO-term prediction accuracy, protein interaction recall, or expert human evaluation to validate functional correctness.
+- **Preference-based fine-tuning:** The DPO and REINFORCE task variants included in this codebase (`genechat/tasks/protein_text_dpo.py`) are ready to use once preference data (e.g., expert-ranked gene descriptions) becomes available.
+
 ## Acknowledgements
 
 - [Shashi-Sekar/GeneChat](https://github.com/Shashi-Sekar/GeneChat) — original GeneChat implementation
