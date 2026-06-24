@@ -4,6 +4,11 @@
 
 GeneChat is a multi-modal large language model that predicts gene function descriptions from genomic sequences. It combines a DNA/mRNA sequence encoder with a large language model (Vicuna-13B), bridged by a linear adaptor trained end-to-end on (sequence, prompt, answer) triplets.
 
+> **Repository history:** This repository builds on the original GeneChat implementation by
+> [Shashi-Sekar](https://github.com/Shashi-Sekar/GeneChat). The `main` branch preserves that
+> original codebase; the `mrna-dev` branch extends it with the GeneChat-mRNA experiments
+> described below.
+
 ![overview](fig/GeneChat.png)
 
 ## Architecture
@@ -37,10 +42,10 @@ You need at least **70 GB GPU memory** for training, 40 GB for inference.
 Download from [Google Drive](https://drive.google.com/drive/folders/1g0Pe0HxfzdhXWbG54rkd-Iya7c6wYZdO?usp=sharing) and place as `train_set/` and `test_set/`.
 
 **GeneChat-mRNA dataset (Human–Mouse mRNA)**
-Build using the preparation scripts:
+Build using the data preparation scripts:
 ```bash
-python prepare_human_mouse_data.py   # download and align HM sequences
-python prepare_mrna_data.py          # filter, tokenize, train/valid split
+python data_prep/prepare_human_mouse_data.py   # download and align HM sequences
+python data_prep/prepare_mrna_data.py          # filter, tokenize, train/valid split
 ```
 
 > **Cluster storage (A00 GPU cluster):** Pre-processed datasets, trained checkpoints, and
@@ -106,16 +111,16 @@ Selective-layer LoRA (layers 5–10 and 32–39 only) is configured inside each 
 bash demo.sh
 
 # Batch inference (single-question)
-python inference_all.py --cfg-path configs/genechat_eval.yaml
+python inference/inference_all.py --cfg-path configs/genechat_eval.yaml
 
 # Aspect-based evaluation (10 targeted questions per gene)
-python inference_aspect.py --cfg-path configs/genechat_eval_dnabert2_stage2.yaml
+python inference/inference_aspect.py --cfg-path configs/genechat_eval_dnabert2_stage2.yaml
 
 # SimCSE semantic similarity scoring
-python eval_semantic_similarity.py --results_file <path/to/results.json>
+python evaluation/eval_semantic_similarity.py --results_file <path/to/results.json>
 
 # GO functional classification
-python eval_go_classification.py --results_file <path/to/results.json>
+python evaluation/eval_go_classification.py --results_file <path/to/results.json>
 ```
 
 ## Reproduce Figures
@@ -123,11 +128,11 @@ python eval_go_classification.py --results_file <path/to/results.json>
 All plotting scripts write to `Report/fig/` (not committed). Run from the repo root:
 
 ```bash
-python plot_aspect_evaluation.py      # Fig: single-question vs. aspect-based SimCSE
-python plot_stage2_convergence.py     # Fig: Stage-2 training convergence
-python plot_mrna_metrics.py           # Fig: BLEU + SimCSE multi-metric bar chart
-python plot_go_classification.py      # Fig: GO classification accuracy
-python plot_ablation_studies.py       # Fig: encoder and adaptor ablations
+python visualization/plot_aspect_evaluation.py    # Fig: single-question vs. aspect-based SimCSE
+python visualization/plot_stage2_convergence.py   # Fig: Stage-2 training convergence
+python visualization/plot_mrna_metrics.py         # Fig: BLEU + SimCSE multi-metric bar chart
+python visualization/plot_go_classification.py    # Fig: GO classification accuracy
+python visualization/plot_ablation_studies.py     # Fig: encoder and adaptor ablations
 ```
 
 ## Project Structure
@@ -140,16 +145,19 @@ GeneChat/
 │   ├── runners/            # Training loop and checkpoint management
 │   └── tasks/              # Task-specific forward/eval logic
 ├── configs/                # Training and evaluation YAML configs
-├── prepare_*.py            # Data preparation scripts
-├── inference_*.py          # Inference scripts
-├── eval_*.py               # Evaluation scripts
-├── plot_*.py               # Figure generation scripts
+├── data_prep/              # Data download, cleaning, and formatting scripts
+├── evaluation/             # Evaluation scripts and shell launchers
+├── visualization/          # Figure generation scripts (outputs to Report/fig/)
+├── inference/              # Batch inference scripts
 ├── finetune.sh             # Training entry point
+├── demo.sh                 # Interactive demo
+├── train_esm.py            # ESM-2 encoder training
 └── environment.yml         # Conda environment
 ```
 
 ## Acknowledgements
 
+- [Shashi-Sekar/GeneChat](https://github.com/Shashi-Sekar/GeneChat) — original GeneChat implementation
 - [DNABERT-2](https://github.com/MAGICS-LAB/DNABERT_2)
 - [Nucleotide Transformer (NT-v2)](https://github.com/instadeepai/nucleotide-transformer)
 - [MiniGPT-4](https://minigpt-4.github.io/)
