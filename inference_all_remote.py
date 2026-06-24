@@ -1,6 +1,5 @@
 import argparse
 import os
-import re
 import random
 import time
 import math
@@ -33,10 +32,6 @@ def parse_args():
     parser.add_argument("--cfg-path", help="path to configuration file.",
                         default='configs/genechat_eval.yaml')
     parser.add_argument("--gpu-id", type=int, default=0, help="specify the gpu to load the model.")
-    parser.add_argument("--output-name", type=str, default=None,
-                        help="custom output filename (without extension). "
-                             "Saved to result_mrna/<output-name>.json. "
-                             "Defaults to eval_results_<cfg-name>.json in the config dir.")
     parser.add_argument(
         "--options",
         nargs="+",
@@ -44,6 +39,16 @@ def parse_args():
         "in xxx=yyy format will be merged into config file (deprecate), "
         "change to --cfg-options instead.",
     )
+    parser.add_argument("--output", type=str, default="results/result_genechat.json",
+                        help="Path to save the results JSON")
+    parser.add_argument("--seq-path", type=str,
+                        default="/data2/genechat/GeneChat_data/test_set/seq.json",
+                        help="Path to seq.json")
+    parser.add_argument("--qa-path", type=str,
+                        default="/data2/genechat/GeneChat_data/test_set/qa_summary_rule.json",
+                        help="Path to qa_summary_rule.json")
+    parser.add_argument("--max-samples", type=int, default=None,
+                        help="Max samples to evaluate (None for all)")
     args = parser.parse_args()
     return args
 
@@ -117,9 +122,9 @@ def gradio_answer(chat_state, img_list, num_beams=1, temperature=1e-3, top_p = 0
                               num_beams=num_beams,
                               temperature=temperature,
                               top_p = top_p,
-                              repetition_penalty=2.5,
-                              max_new_tokens=300,
-                              max_length=1500,
+                              #repetition_penalty=2.0,
+                              max_new_tokens=512,
+                              max_length=1500, 
                               save_embeds=save_embeds)
     return llm_message, chat_state, img_list, loss
 
@@ -130,14 +135,8 @@ def gradio_ppl(chat_state, img_list, predict_list):
                               predict_list=predict_list)
     return loss
 
-questions = [
-    "Describe the biological function of this gene step by step, including its molecular role, cellular location, and disease relevance. ",
-    "What is the primary molecular function of this gene product? Describe the biological pathway it participates in, its subcellular localization, and any known associations with human disease. ",
-    "Provide a detailed description of this gene including: its biochemical activity or structural role, the cellular processes it regulates, where in the cell it is expressed or localized, and its clinical or disease significance. ",
-    "Analyze this gene and describe the function of its encoded protein, including its enzymatic or signaling activity, the biological process it belongs to, its tissue or cellular expression pattern, and any disease phenotype linked to its mutation or dysregulation. ",
-    "Describe this gene by explaining: (1) its molecular function at the protein level, (2) the biological pathway or process it is involved in, (3) its subcellular compartment, and (4) any relevance to genetic disorders or cancer. ",
-    "What does the protein encoded by this gene do? Explain its role in molecular signaling, metabolism, or structural biology, describe where it acts within the cell, and summarize what is known about its involvement in disease. ",
-]
+questions = ["Tell me about this gene. ", 
+                "Please provide a detailed description of the gene. "]
 
 def eval_func_text(qa_list, seq):
     start = time.time()
@@ -154,35 +153,43 @@ def eval_func_text(qa_list, seq):
             name = item['Name']
 
         gene_id = item['Gene Id']
-        seq = seqs.get(str(gene_id)) or seqs.get(gene_id)
-        if seq is None:
-            print(f"WARNING: gene {gene_id} not found in seqs — skipping")
-            continue
+        seq = seqs[gene_id]
         query = random.choice(questions)
 
-        seq_str = seq[0] if isinstance(seq, list) else seq
-        seq_src = "mRNA" if (use_mrna and str(gene_id) in seqs_mrna) else "DNA"
-        max_seq_len = model_config.get("max_gene_length", 10000)
-        if len(seq_str) > max_seq_len:
-            seq_str = seq_str[:max_seq_len]
+        if len(seq[0]) > 160000:
+            seq[0] = seq[0][:159999]
 
         user_message = query
 
-        chat_state, img_list, gene_embeds = upload_gene(seq_str, gene_id, name)
+        chat_state, img_list, gene_embeds = upload_gene(seq[0], gene_id, name)
 
         chat_state = gradio_ask(user_message, chat_state, None)
 
-        llm_message, chat_state, img_list, loss = gradio_answer(chat_state, img_list, num_beams=8)
-        llm_message = re.sub(r'\[(?:provided|supplied) by [^\]]+\]', '', llm_message).strip()
+        llm_message, chat_state, img_list, loss = gradio_answer(chat_state, img_list, num_beams=4)
+
+        # Extract conversation log from chat_state
+        conversation_log = []
+        if hasattr(chat_state, 'messages') and chat_state.messages:
+            for role, msg in chat_state.messages:
+                conversation_log.append({"role": role, "content": msg})
 
         loss_list.append(loss)
         entry = {"seq": seq, "query": query, "correct_func": function[:], "predict_func": llm_message}
         func_text.append(entry)
 
-        entry_without_seq = {"query": query, "correct_func": function[:], "predict_func": llm_message}
+        entry_without_seq = {
+            "gene_id": gene_id,
+            "gene_name": name,
+            "query": query,
+            "correct_func": function[:],
+            "predict_func": llm_message,
+            "loss": loss,
+            "seq_length": len(seq[0]),
+            "conversation": conversation_log
+        }
         func_text_without_seq.append(entry_without_seq)
 
-        print("Gene ID:", gene_id, f"[{seq_src}, len={len(seq_str)}]")
+        print("Gene ID:", gene_id)
         print("Loss:", loss)
         print("Correct Function:", function[:])
         print(f"Predicted Function: {llm_message}")
@@ -402,102 +409,64 @@ def tsne_multi_seq(prots):
 '''
 
 if  __name__ == "__main__":
-    directory_name = "results"
-    if not os.path.exists(directory_name):
+    directory_name = os.path.dirname(args.output) or "results"
+    if directory_name and not os.path.exists(directory_name):
         try:
-            os.mkdir(directory_name)
+            os.makedirs(directory_name, exist_ok=True)
         except Exception as e:
             print(f"An error occurred when creating results folder: {e}")
 
-    # eval_ppl()
+    # Load data
+    print(f"Loading sequences from: {args.seq_path}")
+    seqs = json.load(open(args.seq_path))
+    print(f"Loading QA from: {args.qa_path}")
+    qa_list = json.load(open(args.qa_path))
 
-    # eval_multi_round()
+    if args.max_samples:
+        qa_list = qa_list[:args.max_samples]
+        print(f"Limited to {len(qa_list)} samples")
 
-    # result_dir = "results-glm/10-glm-scratch-llama2-kw/ckpt3"
-
-    # for data_dir in ['test']: #'train', 
-    #     seqs = json.load(open(f"data/{data_dir}_set/seq.json"))
-    #     qa_list = json.load(open(f"data/{data_dir}_set/before_combine/subset/qa_kw.json"))
-    #     scores = eval_kw(qa_list, seqs)
-    #     with open("tmp.json", "w") as outfile:
-    #         json.dump(scores, outfile, indent=4)
-    # '/data2/gene_chat/exon_count/data/train_set/qa_summary_rule_unique_s.json'
-    # eval func text & kw
-    TEST_DIR = "/home/namdo/applications/data_hm/test_hm"
-    seq_dna_path  = os.path.join(TEST_DIR, "seq.json")
-    seq_mrna_path = os.path.join(TEST_DIR, "seq_mrna.json")
-    seqs_dna = json.load(open(seq_dna_path))
-
-    # Use mRNA sequences for mRNA model (seq_mrna builder), genomic DNA for standard model
-    use_mrna = "seq_mrna" in cfg.config.get("datasets", {})
-    if use_mrna and os.path.exists(seq_mrna_path):
-        seqs_mrna = json.load(open(seq_mrna_path))
-        # mRNA takes priority; fallback to genomic DNA for genes without mRNA
-        seqs = dict(seqs_dna)
-        seqs.update({k: [v] if isinstance(v, str) else v for k, v in seqs_mrna.items()})
-        mrna_keys = set(str(k) for k in seqs_mrna.keys())
-        dna_keys  = set(str(k) for k in seqs_dna.keys())
-        print(f"Sequence loading summary:")
-        print(f"  mRNA sequences loaded : {len(seqs_mrna):,} genes")
-        print(f"  Genomic DNA loaded    : {len(seqs_dna):,} genes")
-        print(f"  Total in seqs dict    : {len(seqs):,} genes")
-        print(f"  mRNA-only genes       : {len(mrna_keys - dna_keys):,}")
-        print(f"  DNA-only (fallback)   : {len(dna_keys - mrna_keys):,}")
-        print(f"  Both mRNA+DNA         : {len(mrna_keys & dna_keys):,}")
-        # Spot-check: verify a few gene IDs resolve correctly
-        sample_ids = list(seqs_mrna.keys())[:3]
-        print(f"  Spot-check mRNA genes : {sample_ids}")
-        for sid in sample_ids:
-            val = seqs.get(sid) or seqs.get(int(sid) if sid.isdigit() else sid)
-            seq_str = val[0] if isinstance(val, list) else val
-            src = "mRNA" if sid in mrna_keys else "DNA"
-            print(f"    gene {sid}: {src}, len={len(seq_str) if seq_str else 'NOT FOUND'}")
-    else:
-        seqs = seqs_dna
-        print(f"Using genomic DNA sequences ({len(seqs_dna):,} genes)")
-
-    # Use cleaned rule summaries + UniProt for evaluation
-    qa_files = []
-    rule_clean = os.path.join(TEST_DIR, "qa_summary_rule_clean.json")
-    uniprot_clean = os.path.join(TEST_DIR, "qa_summary_uniprot_clean.json")
-    if os.path.exists(rule_clean):
-        qa_files.append(("rule_clean", json.load(open(rule_clean))))
-    if os.path.exists(uniprot_clean):
-        qa_files.append(("uniprot", json.load(open(uniprot_clean))))
+    print(f"Loaded {len(seqs)} sequences and {len(qa_list)} QA items")
 
     simcse_path = "princeton-nlp/sup-simcse-roberta-large"
-    if args.output_name:
-        output_path = os.path.join("result_mrna", f"{args.output_name}.json")
-        os.makedirs("result_mrna", exist_ok=True)
-    else:
-        output_path = os.path.join(os.path.dirname(args.cfg_path),
-                                   f"eval_results_{os.path.basename(args.cfg_path).replace('.yaml','')}.json")
+    func_text_total = []
+    all_predictions = []  # Full prediction log with conversation
+    freq = 100
 
-    for qa_name, qa_list in qa_files:
-        print(f"\nEvaluating on {qa_name} ({len(qa_list)} entries)...")
-        # Filter out empty summaries
-        qa_list = [q for q in qa_list if q.get("Summary", "").strip()]
-        func_text_total = []
-        freq = 100
-        for i in range(0, len(qa_list), freq):
-            func_text, _ = eval_func_text(qa_list[i:i+freq], seqs)
-            func_text_total.extend(func_text)
-            print(f"  [{i+freq}/{len(qa_list)}] genes evaluated so far")
+    for i in range(0, len(qa_list), freq):
+        func_text, func_text_without_seq = eval_func_text(qa_list[i:i+freq], seqs)
 
-        # Compute SimCSE + BLEU once at the end (model loads only once)
-        scores = get_simcse(simcse_path, func_text_total)
-        print(f"\n{qa_name} final scores:", scores)
+        func_text_total.extend(func_text)
+        all_predictions.extend(func_text_without_seq)
 
-    with open(output_path, "w") as f:
-        json.dump(func_text_total, f, indent=2)
-    print(f"Results saved to {output_path}")
-                
-            #with open("results/esm.json", "a") as outfile:
-            #    json.dump(scores, outfile, indent=4)
-        
-        #qa_list = json.load(open(f"/data2/gene_chat/exon_count/data/{data_dir}_set/qa_kw.json"))
-        #scores = eval_kw(qa_list, seqs)
-        #with open("results/esm.json", "a") as outfile:
-        #    json.dump(scores, outfile, indent=4)
+        # Compute running SimCSE scores
+        func_arg = copy.deepcopy(func_text_total)
+        scores = get_simcse(simcse_path, func_arg)
+
+        # Incremental save (in case of crash)
+        _tmp_output = args.output.replace('.json', '_partial.json')
+        with open(_tmp_output, 'w') as f:
+            json.dump({
+                "predictions": all_predictions,
+                "num_samples_so_far": len(all_predictions)
+            }, f, indent=4)
+        print(f"Saved {len(all_predictions)} predictions so far to {_tmp_output}")
+
+    # Final SimCSE scores
+    scores = get_simcse(simcse_path, func_text_total)
+
+    # Extract final scores (last element appended by get_simcse)
+    final_scores = scores[-1] if isinstance(scores[-1], dict) else {}
+
+    # Save final results
+    output_data = {
+        "scores": final_scores,
+        "num_samples": len(all_predictions),
+        "predictions": all_predictions
+    }
+    with open(args.output, 'w') as f:
+        json.dump(output_data, f, indent=4)
+    print(f"\nFinal results saved to {args.output}")
+    print(f"Scores: {final_scores}")
 
 
